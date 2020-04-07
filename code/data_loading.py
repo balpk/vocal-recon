@@ -14,19 +14,38 @@ from config import config
 
 def first_try():
     path = config["DATAPATH"]
+    #  There is an online documentation: Link is in the presentation (try to get the newest version).
+    #  https://www.authorea.com/users/53192/articles/321045-sdr-birdrec-software-documentation
+    #
+
+    # - Todo: Vocalizations: betw. 50 and 200 ms --> check that you reduce the FFT window
+    # - Todo: Find program that plays the recordings -> narrow down where the vocalizations are
+    # - Spectrograms should be at maximum 2 seconds, initially, to look at how our models perform / inspect the
+    #   data visually, that noise detection works
+    # - check for a small online GUI to inspect this
+    # - Other "noise": Some bird vocalizations are very short and cover a large spectrum, those are not not "vocalizations".
+    #                 vocalizations have distinct features
+    # - Todo: also add a constant when taking the log
+
     filenames = ["2018-08-14/" + nm for nm in [
-        "b8p2male-b10o15female_3_DAQmxChannels.w64",     # 1 channel
-        "b8p2male-b10o15female_3_SdrSignalStrength.w64",  # 3 channels, values between -61 and 7
-        "b8p2male-b10o15female_3_SdrCarrierFreq.w64",    # has 3 channels
-        "b8p2male-b10o15female_3_SdrChannels.w64",       # 3 channels, not same length as DAQmx but similar (11 mio vs. 15 mio)
-        "b8p2male-b10o15female_3_SdrReceiveFreq.w64",  # 3 channels. Has values between 301*10^6 and 307*10^6 --these are the min & max transmitter frequencies for the male bird (see .csv), whatever that means.
-        "b8p2male-b10o15female_3_SdrChannelList.csv",
+        "b8p2male-b10o15female_5_DAQmxChannels.w64",     # 1 channel   <--- Microphone! We don't use it, not aligned with the backpacks
+        # SDR: One of the three channels is microphone
+        "b8p2male-b10o15female_5_SdrSignalStrength.w64",  # <-- use to detect the radio noise.
+                # Compare presentation:
+                # 3 channels, values between -61 and 7
+        "b8p2male-b10o15female_5_SdrCarrierFreq.w64",    # has 3 channels
+        "b8p2male-b10o15female_5_SdrChannels.w64",       # <--- !! The microphone, aligned with the others.
+            # 1st channel: microphone, 2nd: female backpack, 3rd: male backpack
+            # 3 channels, not same length as DAQmx but similar (11 mio vs. 15 mio)
+        "b8p2male-b10o15female_5_SdrReceiveFreq.w64",  # 3 channels. Has values between 301*10^6 and 307*10^6 --these are the min & max transmitter frequencies for the male bird (see .csv), whatever that means.
+        "b8p2male-b10o15female_5_SdrChannelList.csv",
     ]]
-    # with sf.SoundFile(os.path.join(path, filenames[0]), 'r') as f:
-    #     while f.tell() < len(f):
-    #         pos = f.tell()
-    #         data = f.read(1024)
-    #         f.seek(pos)
+
+    #
+    #  What are S_trivial, S_clean? :
+    #   S_trivial: Create a measure for silence -> automatically detect recordings where only one bird is vocalizing
+    #   S_clean:   Same, we have to extract those parts
+    #
 
     for fn in filenames[:-1]:
         filename0 = os.path.join(path, fn)
@@ -43,7 +62,7 @@ def first_try():
         # Plot the audio signal in time
         import matplotlib.pyplot as plt
         plt.figure()
-        plt.plot(Audiodata)
+        plt.plot(Audiodata[:10000000])
         plt.title('Audio signal in time', size=16)
         # spectrum
         from scipy.fftpack import fft  # fourier transform
@@ -71,7 +90,7 @@ def first_try():
         if len(Audiodata.shape) == 1:
             Audiodata = Audiodata[:, np.newaxis]
         for i in range(Audiodata.shape[1]):
-                f, t, Sxx = signal.spectrogram(Audiodata[:, i], samplerate, window=signal.blackman(N), nfft=N)
+                f, t, Sxx = signal.spectrogram(Audiodata[:10000000, i], samplerate, window=signal.blackman(N), nfft=N)
                 plt.figure()
                 plt.pcolormesh(t, f, 10 * np.log10(Sxx))  # dB spectrogram
                 # plt.pcolormesh(t, f,Sxx) # Lineal spectrogram
@@ -81,7 +100,7 @@ def first_try():
 
         plt.show()
 
-        print("breakpoint")
+    print("breakpoint")
 
 
 if __name__ == '__main__':
