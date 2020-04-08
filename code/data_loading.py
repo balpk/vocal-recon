@@ -10,9 +10,16 @@ import numpy as np
 
 from config import config
 
+def load_recording(day=14, recording=3, more_parameters_that_are_useful=None):
+    # todo
+    day = "2018-08-"+str(day)
+    recording_base_str = "b8p2male-b10o15female_"+str(recording)+"_"
+    filenm = recording_base_str + "SdrChannels.w64"
+    strength_filenm = recording_base_str + "SdrSignalStrength.w64"
 
 
-def first_try():
+
+def first_try_plot():
     path = config["DATAPATH"]
     #  There is an online documentation: Link is in the presentation (try to get the newest version).
     #  https://www.authorea.com/users/53192/articles/321045-sdr-birdrec-software-documentation
@@ -26,6 +33,7 @@ def first_try():
     # - Other "noise": Some bird vocalizations are very short and cover a large spectrum, those are not not "vocalizations".
     #                 vocalizations have distinct features
     # - Todo: also add a constant when taking the log
+    #  ** Sampling rate is 24kHz **
 
     filenames = ["2018-08-14/" + nm for nm in [
         "b8p2male-b10o15female_5_DAQmxChannels.w64",     # 1 channel   <--- Microphone! We don't use it, not aligned with the backpacks
@@ -104,4 +112,4 @@ def first_try():
 
 
 if __name__ == '__main__':
-    first_try()
+    first_try_plot()
