@@ -63,17 +63,21 @@ class RecordingDataset():
     '''
 
 
-    def __init__(self, recordings:list=[3], window_size=512, overlap=0.875, max_freq=8000, min_freq=350,  sequence_length=25, do_shuffle=True):
+    def __init__(self, recordings:list=[3], window_size=512, overlap=0.875, max_freq=8000, min_freq=350,  sequence_length=10, do_shuffle=True,
+                 norm_threshold=1e-6):
         '''
         :param recordings: which recording files to read
         :param window_size: how many samples the fft window should span
         :param overlap between windows, in fractions of window size
         :param max_freq, min_freq: Todo. Band-pass filter the signal to this range. From the data: The transmitter frequency is limited.
         :param sequence_length: Cut the recording into sequences of this length
+        :param norm_threshold: The norm of each spectrogram-sequence will be compared to this, and if the norm is below, the sequence is removed.
+                                This is to filter out the parts of the recording without vocalizations. How to set this threshold is not quite clear though.
         '''
         self.window_size = window_size
         self.overlap = overlap
         self.noverlap = int(np.floor(self.window_size * self.overlap))
+        self.norm_threshold = norm_threshold
         assert  0 <= overlap < 1, "overlap as fraction of window size, so < 1 (0: no overlap)"
         valid_recording_nrs = sorted(list(RECORDING_DAYS.keys()))
         assert all([r in valid_recording_nrs for r in recordings]), "Only those recording numbers are available: "+str(valid_recording_nrs)
@@ -197,8 +201,8 @@ class RecordingDataset():
 
         # 6. Remove recordings without vocalization:
         average_power = np.linalg.norm(self._cur_spectrogram_mic["spectrogram"], axis=(1,2))
-        plt.hist(average_power, bins=20, log=True)
-        good_ids = average_power > 0.1e-5 # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
+        # plt.hist(average_power, bins=20, log=True)
+        good_ids = average_power > self.norm_threshold # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
         for spectro_dict in [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2]:
             spectro_dict["spectrogram"] = spectro_dict["spectrogram"][good_ids, ...]
             spectro_dict["t"] = spectro_dict["t"][good_ids]
