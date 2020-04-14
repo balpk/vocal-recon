@@ -58,8 +58,7 @@ class RecordingDataset():
     Class that manages access to the birdsong recordings
     Todo: Can be used to generate shuffled batches for neural network training
     Needs to be done separately: Use two separate RecordingDatasets for train and validation data (and keep some recordings untouched, for testing data)
-    Todo: Visualization function
-    Todo: Do not read everything at once but allow parameterized reads and batches --> can train on the full data, otherwise not possible
+    Has a visualization function (plot_batch)
     '''
 
 
@@ -189,15 +188,6 @@ class RecordingDataset():
         # assert num_points == len(self._cur_signal_strength)
         # self._cur_signal_strength = self._cur_signal_strength[..., :  num_sequences * int(np.floor(num_points / num_sequences))]
         # self._cur_signal_strength =  self._cur_signal_strength.reshape((-1, num_sequences ))
-
-        # # for debugging, remove later:
-        # for sidx in range(10):# range(spectro_dict["spectrogram"].shape[2]):
-        #     s = spectro_dict["spectrogram"][:, :, sidx]
-        #     plt.figure()
-        #     plt.plot(range(len(s)), np.linalg.norm(s, axis=1))
-        #     plt.pause(0.001)
-        #     plt.show()
-
 
         # 6. Remove recordings without vocalization:
         average_power = np.linalg.norm(self._cur_spectrogram_mic["spectrogram"], axis=(1,2))
