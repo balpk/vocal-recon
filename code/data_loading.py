@@ -239,10 +239,10 @@ class RecordingDataset():
 
         # 6. Remove recordings without vocalization:
         #   unit: dB? a type of log, that is for sure, because we have larger negative values
-        #average_power = np.mean( self._cur_signal_strength, axis=(1,2))
-        average_power = np.linalg.norm(self._cur_spectrogram_mic["spectrogram"], axis=(1,2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
+        average_power = np.mean( self._cur_signal_strength, axis=(1,2))
+        #average_power = np.linalg.norm(self._cur_spectrogram_mic["spectrogram"], axis=(1,2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
         # plt.hist(average_power, bins=20, log=True)
-        good_ids = average_power >= 0.001 # self.dB_signal_threshold
+        good_ids = average_power >=  self.dB_signal_threshold
         for spectro_dict in [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2]:
             spectro_dict["spectrogram"] = spectro_dict["spectrogram"][good_ids, ...]
             spectro_dict["t"] = spectro_dict["t"][good_ids]
@@ -298,7 +298,7 @@ class RecordingDataset():
                 plt.xlabel('Time [sec]')
                 plt.title(name + ', seq. '+str(i) + ' - Spectrogram with scipy.signal', size=16)
 
-                plt.pause(0.001)
+                #plt.pause(0.001)
                 #plt.show()
                 plt.savefig(base_path + "_" + str(i) + "_" + name )
 
