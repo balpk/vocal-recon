@@ -4,6 +4,37 @@
 
     Todo:
         - take the fft on parts of size 1 mio datapoints, not a whole recording at once
+        - batch processing
+
+
+     There is an online documentation of the data creation tool:
+       Link is in the presentation (try to get the newest version).
+     https://www.authorea.com/users/53192/articles/321045-sdr-birdrec-software-documentation
+
+     For all visualizations:
+       Make sure you look at at least ~1 second of recording.
+
+    ** What vocalizations, etc look like **
+     Radio noise:
+          - only in the backpack recordings;
+          - it really looks like noise and covers the whole spectrum
+     Wing flaps:
+          - Vertical "bars", very short and cover a few frequency bars
+     Vocalizations:
+          - Cover a longer *horizontal* range, "distinct features"
+
+    - Todo: Find program that plays the recordings -> narrow down where the vocalizations are
+    - Spectrograms should be at maximum 2 seconds, initially, to look at how our models perform / inspect the
+      data visually, that noise detection works
+    - check for a small online GUI to inspect this
+    - Other "noise": Some bird vocalizations are very short and cover a large spectrum, those are not not "vocalizations".
+                    vocalizations have distinct features
+    - OK: also add a constant when taking the log
+     ** Sampling rate is 24kHz **
+
+    The FFT part is based on:
+        https://stackoverflow.com/questions/24382832/audio-spectrum-extraction-from-audio-file-by-python
+
 '''
 
 import soundfile as sf
@@ -16,6 +47,7 @@ import copy
 import re
 
 from config import config
+import utils
 
 
 
@@ -64,15 +96,16 @@ class RecordingDataset():
     '''
 
 
-    def __init__(self, recordings:list=[3], window_size=512, overlap=0.875, max_freq=8000, min_freq=350,  sequence_length=10, do_shuffle=True,
-                 norm_threshold=1e-6,  remove_noise=False, remove_simultaneous_vocalization=False):
+    def __init__(self, recordings:list=[3], window_size=512, overlap=0.875, max_freq=8000, min_freq=350, sequence_length=100, do_shuffle=True,
+                 dB_signal_threshold=-5, remove_noise=False, remove_simultaneous_vocalization=False):
         '''
         :param recordings: which recording files to read
         :param window_size: how many samples the fft window should span
         :param overlap between windows, in fractions of window size
-        :param max_freq, min_freq: Band-pass filter the signal to this range. (It's already within the audible range, but the Nature paper reduces to between ? and 8kHz)
+        :param max_freq, min_freq: Band-pass filter the signal to this range.
+                (It's already within the audible range, but the Nature paper reduces to between ? and 8kHz)
         :param sequence_length: Cut the recording into sequences of this length
-        :param norm_threshold: The norm of each spectrogram-sequence will be compared to this, and if the norm is below, the sequence is removed.
+        :param dB_signal_threshold: The norm of each spectrogram-sequence will be compared to this, and if the norm is below, the sequence is removed.
                                 This is to filter out the parts of the recording without vocalizations. How to set this threshold is not quite clear though.
         :param remove_noise: If True, return S_clean (todo)
         :param remove_simultaneous_vocalization: If True, return S_trivial (todo)
@@ -80,7 +113,7 @@ class RecordingDataset():
         self.window_size = window_size
         self.overlap = overlap
         self.noverlap = int(np.floor(self.window_size * self.overlap))
-        self.norm_threshold = norm_threshold
+        self.dB_signal_threshold = dB_signal_threshold
         assert  0 <= overlap < 1, "overlap as fraction of window size, so < 1 (0: no overlap)"
         valid_recording_nrs = sorted(list(RECORDING_DAYS.keys()))
         assert all([r in valid_recording_nrs for r in recordings]), "Only those recording numbers are available: "+str(valid_recording_nrs)
@@ -162,26 +195,32 @@ class RecordingDataset():
                     spectro_dict["spectrogram"] = spectro_dict["spectrogram"][good_ids]
                     spectro_dict["frequencies"] = spectro_dict["frequencies"][good_ids]
 
-        # * signal strength has a different size of first dimension, but its first dimension corresponds to the time
-        #   dimension of the other channels. --> stretch signalStrength array
+        # 3. signal strength has a different size of first dimension, but its first dimension corresponds to the time
+        #       dimension of the other channels. --> stretch signalStrength array
+        self._cur_strength_raw = utils.interpolate1D(self._cur_strength_raw, (self._cur_spectrogram_mic["spectrogram"].shape[-1]))
+        self._cur_signal_strength = self._cur_strength_raw
 
-        # # 3. also average the signal strength to new size
-        #     # a factor for calculations later:
+        # # Edit: the next part would take a windowed average also of the signal strenght (and it seems to work),
+        # #       but I don't think it's needed, signal strenght is not very stochastic (?)
+        # self._cur_strength_raw = utils.interpolate1D(self._cur_strength_raw, len(Audiodata))
+        #    # factor for calculations later:
         # _x = len(self._cur_audio_mic) / (self._cur_spectrogram_mic["spectrogram"].shape[1]) #  a float
-        # self._cur_signal_strength = np.zeros((self._cur_spectrogram_mic["spectrogram"].shape[1]), float)
+        # self._cur_signal_strength = np.zeros((self._cur_spectrogram_mic["spectrogram"].shape[1], 3), float)
         # for i in range((self._cur_spectrogram_mic["spectrogram"].shape[1])):
         #     lower = int(np.floor(i * (_x)))
         #     higher = int(np.floor((i + 1) * (_x)))
-        #     self._cur_signal_strength[i] = np.mean(np.array(self._cur_strength_raw[ lower : higher]))
-        #     # ... don't know how to do this with little effort and without knowing exactly how windowing works in the spectrogram function above.
+        #     self._cur_signal_strength[i] = np.mean(np.array(self._cur_strength_raw[ lower : higher]), axis=0)
+
 
         # 4a. placeholder for denoising
         #  Todo: @Others
         # if self.return_clean: ...
 
+
         # 4b. placeholder for splitting into S_trivial vs. S_multiple
         #  Todo: @Others
         # if self.remove_simultaneous_vocalization: ...
+
 
         # 5. split all into sequence-length chunks (reshape)
         num_sequences = int(np.floor((self._cur_spectrogram_mic["spectrogram"].shape[1]) / self.sequence_length))
@@ -189,25 +228,26 @@ class RecordingDataset():
             num_freqs = spectro_dict["spectrogram"].shape[0]
             num_points =  spectro_dict["spectrogram"].shape[-1]
             assert num_freqs == len(spectro_dict["frequencies"])
-            spectro_dict["spectrogram"] = spectro_dict["spectrogram"][..., : num_sequences * int(np.floor(num_points / num_sequences))]
+            spectro_dict["spectrogram"] = spectro_dict["spectrogram"][..., : self.sequence_length * int(np.floor(num_points / self.sequence_length))]
             spectro_dict["spectrogram"] = spectro_dict["spectrogram"].transpose() # --> frequency in last dimension
             spectro_dict["spectrogram"] = spectro_dict["spectrogram"].reshape((num_sequences, self.sequence_length, num_freqs ))
-            spectro_dict["t"] = spectro_dict["t"][ : num_sequences * int(np.floor(num_points / num_sequences))]
+            spectro_dict["t"] = spectro_dict["t"][ : self.sequence_length * int(np.floor(num_points / self.sequence_length))]
             spectro_dict["t"] = spectro_dict["t"].reshape(( num_sequences, self.sequence_length))
-        # assert num_points == len(self._cur_signal_strength)
-        # self._cur_signal_strength = self._cur_signal_strength[..., :  num_sequences * int(np.floor(num_points / num_sequences))]
-        # self._cur_signal_strength =  self._cur_signal_strength.reshape((-1, num_sequences ))
+        assert num_points == len(self._cur_signal_strength)
+        self._cur_signal_strength = self._cur_signal_strength[ :  self.sequence_length * int(np.floor(num_points / self.sequence_length)), :]
+        self._cur_signal_strength =  self._cur_signal_strength.reshape((num_sequences , self.sequence_length,  3))
 
         # 6. Remove recordings without vocalization:
-        average_power = np.linalg.norm(self._cur_spectrogram_mic["spectrogram"], axis=(1,2))
+        #   unit: dB? a type of log, that is for sure, because we have larger negative values
+        #average_power = np.mean( self._cur_signal_strength, axis=(1,2))
+        average_power = np.linalg.norm(self._cur_spectrogram_mic["spectrogram"], axis=(1,2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
         # plt.hist(average_power, bins=20, log=True)
-        good_ids = average_power > self.norm_threshold # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
+        good_ids = average_power >= 0.001 # self.dB_signal_threshold
         for spectro_dict in [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2]:
             spectro_dict["spectrogram"] = spectro_dict["spectrogram"][good_ids, ...]
             spectro_dict["t"] = spectro_dict["t"][good_ids]
+        self._cur_signal_strength = self._cur_signal_strength[good_ids, ...]
 
-        for idx, seq in enumerate(self._cur_spectrogram_mic["spectrogram"]):
-            pass
 
         # 6. create shuffled or non-shuffled indices for this recording
         self._shuffled_recording_indices = np.array(list(np.arange((self._cur_spectrogram_mic["spectrogram"].shape[0]))))
@@ -227,14 +267,16 @@ class RecordingDataset():
                     (batch_size, sequence_length, number_frequencies )
                 Spectrograms are accessible at "spectrogram" in the returned dictionaries.
                 Except the signal strength array, it's already an array and has shape (batch_size, sequence_length).
+
+                Returns three dicts with spectrograms and one array of signal strengths, scaled to the same time points
         '''
         if self.do_shuffle:
             np.random.shuffle(self._shuffled_recordings)
         for rec in self._shuffled_recordings:
             self._read_recording(rec)
             if batch_size < 0:
-                yield [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2]
-                     #  self._cur_signal_strength]
+                yield [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2,
+                       self._cur_signal_strength]
             else:
                 raise NotImplementedError("Batch-processing not implemented yet (todo; not too difficult though, just "
                                           "shuffle the indices of the whole recording, and create batch_size-sized batches from them)")
@@ -242,7 +284,7 @@ class RecordingDataset():
 
     def plot_batch(self, batch, base_path=""):
         ''' takes what's returned by yield_batches() in one step and creates spectrogram & strength plots'''
-        mic, bird1, bird2 = batch
+        mic, bird1, bird2, signal_strength = batch
         for spectrogram, name in [(mic, "mic"), (bird1, "bird1"), (bird2, "bird2")]:
             t = spectrogram["t"]
             f = spectrogram["frequencies"]
@@ -276,31 +318,10 @@ class RecordingDataset():
 
 
 
-def test_data_laoding():
-    DS = RecordingDataset(recordings=[3], window_size=512, overlap=0.875, max_freq=8000, min_freq=350,  sequence_length=10, do_shuffle=True)
-    for b in DS.yield_batches():
-        DS.plot_batch(b)
-        mic, b1, b2 = b
-        print("hello")
-
-     # todo
 
 
 def first_try_plot():
     path = config["DATAPATH"]
-    #  There is an online documentation: Link is in the presentation (try to get the newest version).
-    #  https://www.authorea.com/users/53192/articles/321045-sdr-birdrec-software-documentation
-    #
-
-    # - Todo: Vocalizations: betw. 50 and 200 ms --> check that you reduce the FFT window
-    # - Todo: Find program that plays the recordings -> narrow down where the vocalizations are
-    # - Spectrograms should be at maximum 2 seconds, initially, to look at how our models perform / inspect the
-    #   data visually, that noise detection works
-    # - check for a small online GUI to inspect this
-    # - Other "noise": Some bird vocalizations are very short and cover a large spectrum, those are not not "vocalizations".
-    #                 vocalizations have distinct features
-    # - Todo: also add a constant when taking the log
-    #  ** Sampling rate is 24kHz **
 
     filenames = ["2018-08-14/" + nm for nm in [
         "b8p2male-b10o15female_5_DAQmxChannels.w64",     # 1 channel   <--- Microphone! We don't use it, not aligned with the backpacks
@@ -376,6 +397,18 @@ def first_try_plot():
         plt.pause(0.001)
 
     print("breakpoint")
+
+
+
+def test_data_laoding():
+    DS = RecordingDataset(recordings=[3], window_size=512, overlap=0.5, max_freq=8000, min_freq=350,
+                          sequence_length=100, dB_signal_threshold=-2)
+    for b in DS.yield_batches():
+        DS.plot_batch(b)
+        mic, b1, b2, strength = b
+        print("hello")
+
+     # todo: continue when batching is implemented
 
 
 if __name__ == '__main__':
