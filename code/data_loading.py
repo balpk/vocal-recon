@@ -1,6 +1,9 @@
 '''
     Read and inspect the data provided by the supervisors (convert raw data to spectograms).
     Describe it in the methods sections. Describe your strategy of tackling the problem.
+
+    Todo:
+        - take the fft on parts of size 1 mio datapoints, not a whole recording at once
 '''
 
 import soundfile as sf
@@ -9,7 +12,6 @@ from scipy import signal
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-#from scipy.io import wavfile  # scipy library to read wav files
 import copy
 import re
 
@@ -63,15 +65,17 @@ class RecordingDataset():
 
 
     def __init__(self, recordings:list=[3], window_size=512, overlap=0.875, max_freq=8000, min_freq=350,  sequence_length=10, do_shuffle=True,
-                 norm_threshold=1e-6):
+                 norm_threshold=1e-6,  remove_noise=False, remove_simultaneous_vocalization=False):
         '''
         :param recordings: which recording files to read
         :param window_size: how many samples the fft window should span
         :param overlap between windows, in fractions of window size
-        :param max_freq, min_freq: Todo. Band-pass filter the signal to this range. From the data: The transmitter frequency is limited.
+        :param max_freq, min_freq: Band-pass filter the signal to this range. (It's already within the audible range, but the Nature paper reduces to between ? and 8kHz)
         :param sequence_length: Cut the recording into sequences of this length
         :param norm_threshold: The norm of each spectrogram-sequence will be compared to this, and if the norm is below, the sequence is removed.
                                 This is to filter out the parts of the recording without vocalizations. How to set this threshold is not quite clear though.
+        :param remove_noise: If True, return S_clean (todo)
+        :param remove_simultaneous_vocalization: If True, return S_trivial (todo)
         '''
         self.window_size = window_size
         self.overlap = overlap
@@ -85,7 +89,9 @@ class RecordingDataset():
         self.do_shuffle = do_shuffle
         self.max_freq = max_freq
         self.min_freq = min_freq
-       # self.base_path =  config["DATAPATH"]
+        self.remove_noise = remove_noise
+        self.remove_simultaneous_vocalization = remove_simultaneous_vocalization
+
 
         self.samplerate = 24000 # 24 kHz
 
@@ -102,7 +108,7 @@ class RecordingDataset():
         self._cur_strength_raw = None
 
 
-    def _read_recording(self, recording_nr,  remove_noise=False, remove_simultaneous_vocalization=False):
+    def _read_recording(self, recording_nr):
         '''
         Reads a single recording and performs all the preprocessing
         The data can then be "shuffled" and returned, either as whole or in batches
@@ -156,8 +162,9 @@ class RecordingDataset():
                     spectro_dict["spectrogram"] = spectro_dict["spectrogram"][good_ids]
                     spectro_dict["frequencies"] = spectro_dict["frequencies"][good_ids]
 
-        ## EDIT: signal strength has a different size of first dimension, so it can't correspond like that to the other channels.
-        ## So since I don't know what it is at all, cannot split it into sequences
+        # * signal strength has a different size of first dimension, but its first dimension corresponds to the time
+        #   dimension of the other channels. --> stretch signalStrength array
+
         # # 3. also average the signal strength to new size
         #     # a factor for calculations later:
         # _x = len(self._cur_audio_mic) / (self._cur_spectrogram_mic["spectrogram"].shape[1]) #  a float
@@ -170,9 +177,11 @@ class RecordingDataset():
 
         # 4a. placeholder for denoising
         #  Todo: @Others
+        # if self.return_clean: ...
 
         # 4b. placeholder for splitting into S_trivial vs. S_multiple
         #  Todo: @Others
+        # if self.remove_simultaneous_vocalization: ...
 
         # 5. split all into sequence-length chunks (reshape)
         num_sequences = int(np.floor((self._cur_spectrogram_mic["spectrogram"].shape[1]) / self.sequence_length))
