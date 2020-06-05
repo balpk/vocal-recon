@@ -1,5 +1,20 @@
 import numpy as np
 import scipy.interpolate as interp
+import os
+
+def try_extract_directory(path):
+    path_ = path.split("/")
+    if "." in path_[-1]:
+        return "/".join(path_[:-1])
+    else:
+        return path
+
+def ensure_dir(path):
+    '''https://stackoverflow.com/questions/273192/how-can-i-safely-create-a-nested-directory'''
+    import os
+    directory = try_extract_directory(path)
+    if not os.path.exists(directory):
+        os.makedirs(directory)
 
 
 def interpolate1D(arr, new_length):
@@ -12,7 +27,7 @@ def interpolate1D(arr, new_length):
     L = arr.shape[0]
     if N == L:
         return arr
-    assert N > L, "To downsample, use something else"
+    assert N > L, "To downsample, use something else. Or remove the signal strength array altogether, we don't use it anyway, right?"
 
     stepsize = float(N)/(float(L - 1))
     xcoords = [stepsize * float(i) for i in np.arange(L)]
