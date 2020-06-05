@@ -23,14 +23,18 @@
      Vocalizations:
           - Cover a longer *horizontal* range, "distinct features"
 
-    - Todo: Find program that plays the recordings -> narrow down where the vocalizations are
+    - OK: Audacity: Find program that plays the recordings -> narrow down where the vocalizations are
     - Spectrograms should be at maximum 2 seconds, initially, to look at how our models perform / inspect the
       data visually, that noise detection works
-    - check for a small online GUI to inspect this
     - Other "noise": Some bird vocalizations are very short and cover a large spectrum, those are not not "vocalizations".
                     vocalizations have distinct features
     - OK: also add a constant when taking the log
      ** Sampling rate is 24kHz **
+
+
+    #  What are S_trivial, S_clean? :
+    #   S_trivial: Create a measure for silence -> automatically detect recordings where only one bird is vocalizing
+    #   S_clean:   Same, we have to extract those parts
 
     The FFT part is based on:
         https://stackoverflow.com/questions/24382832/audio-spectrum-extraction-from-audio-file-by-python
@@ -91,7 +95,7 @@ RECORDING_DAYS = generate_recording_day_mapping()
 class RecordingDataset():
     '''
     Class that manages access to the birdsong recordings
-    Todo: Can be used to generate shuffled batches for neural network training
+    Todo: Edit: Not sure we want to do that in this way. -- Generate shuffled batches for neural network training
     Needs to be done separately: Use two separate RecordingDatasets for train and validation data (and keep some recordings untouched, for testing data)
     Has a visualization function (plot_batch)
     '''
@@ -139,8 +143,8 @@ class RecordingDataset():
         self._cur_audio_bird1 = None #  N x time points
         self._cur_audio_bird2 = None #  N x time points
         self._cur_audio_mic = None #  N x time points
-        self._cur_signal_strength = None # an N x seq_length array storing the average signal strength for each fourier window
-        self._cur_strength_raw = None
+        # self._cur_signal_strength = None # an N x seq_length array storing the average signal strength for each fourier window
+        # self._cur_strength_raw = None
 
 
     def _read_recording(self, recording_nr):
@@ -163,8 +167,6 @@ class RecordingDataset():
         strength_filenm = strength_filename(recording_nr)
         with open(filenm, 'rb') as f:
             Audiodata, _samplerate_bad = sf.read(f)
-        # if len(Audiodata) > 20000000:
-        #     Audiodata = Audiodata[:20000000]
         self._cur_audio_mic = Audiodata[:, 0]
         self._cur_audio_bird1 = Audiodata[:, 1]
         self._cur_audio_bird2 = Audiodata[:, 2]
@@ -173,23 +175,11 @@ class RecordingDataset():
         with open(strength_filenm, 'rb') as f:
             self._cur_strength_raw, _str_samplerate = sf.read(f)
 
-        # Filter to make fourier transform within our frequency range work better
-        # -- from Burak's code
+        # Filter to reduce low-frequency offset, and make fourier transform within our frequency range work better
         sos = signal.butter(10, [15, 8000], 'bp', fs=24000, output='sos')
         self._cur_audio_mic = signal.sosfilt(sos, self._cur_audio_mic)
         self._cur_audio_bird1 = signal.sosfilt(sos, self._cur_audio_bird1)
         self._cur_audio_bird2 = signal.sosfilt(sos, self._cur_audio_bird2)
-
-        # # 1 1/2. subtract offset
-        # # From Burak's code
-        # window = 2400
-        # #abs_mic = np.absolute(self._cur_audio_mic)
-        # mean_pd_abs = pd.Series(self._cur_audio_mic).rolling(window=window).mean().iloc[window - 1:].values
-        # good_ids = mean_pd_abs >= 0.00001
-        # good_ids = np.array([False] * (window // 2) + good_ids.tolist() + [False] * (window // 2 - 1))
-        # self._cur_audio_mic = self._cur_audio_mic[good_ids]
-        # self._cur_audio_bird1 = self._cur_audio_bird1[good_ids]
-        # self._cur_audio_bird2 = self._cur_audio_bird2[good_ids]
 
         # 2. take the fourier transforms
         f, t, Sxx = signal.spectrogram(self._cur_audio_mic, self.samplerate, window=signal.hamming(self.window_size, sym=False), #window=signal.blackman(self.window_size),
@@ -221,25 +211,14 @@ class RecordingDataset():
         # self._cur_strength_raw = utils.interpolate1D(self._cur_strength_raw, (self._cur_spectrogram_mic["spectrogram"].shape[-1]))
         # self._cur_signal_strength = self._cur_strength_raw
 
-        # # Edit: the next part would take a windowed average also of the signal strenght (and it seems to work),
-        # #       but I don't think it's needed, signal strenght is not very stochastic (?)
-        # self._cur_strength_raw = utils.interpolate1D(self._cur_strength_raw, len(Audiodata))
-        #    # factor for calculations later:
-        # _x = len(self._cur_audio_mic) / (self._cur_spectrogram_mic["spectrogram"].shape[1]) #  a float
-        # self._cur_signal_strength = np.zeros((self._cur_spectrogram_mic["spectrogram"].shape[1], 3), float)
-        # for i in range((self._cur_spectrogram_mic["spectrogram"].shape[1])):
-        #     lower = int(np.floor(i * (_x)))
-        #     higher = int(np.floor((i + 1) * (_x)))
-        #     self._cur_signal_strength[i] = np.mean(np.array(self._cur_strength_raw[ lower : higher]), axis=0)
-
 
         # 4a. placeholder for denoising
-        #  Todo: @Others
+        #  Todo: @Others - edit: or is that solved now?
         # if self.return_clean: ...
 
 
         # 4b. placeholder for splitting into S_trivial vs. S_multiple
-        #  Todo: @Others
+        #  Todo: @Others - edit: maybe do that elsewhere
         # if self.remove_simultaneous_vocalization: ...
 
 
@@ -260,30 +239,19 @@ class RecordingDataset():
 
         # 6. Remove recordings without vocalization:
         #   unit: dB? a type of log, that is for sure, because we have larger negative values
-        # average_power = np.mean( self._cur_signal_strength, axis=(1,2))
-        # average_power = np.linalg.norm(self._cur_spectrogram_mic["spectrogram"], axis=(1,2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
-        # average_power_2 = np.linalg.norm(self._cur_audio_mic[0], axis=(1))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
 
-        # Todo: put stuff below back / uncomment again, depending
         mid_freq_ids = ((self._cur_spectrogram_mic["frequencies"] <= 6000) & (self._cur_spectrogram_mic["frequencies"] >= 2000))
         high_freq_ids = ((self._cur_spectrogram_mic["frequencies"] <= 8000) & (self._cur_spectrogram_mic["frequencies"] > 4000))
         main_freq_ids = ((self._cur_spectrogram_mic["frequencies"] <= 4000) & (self._cur_spectrogram_mic["frequencies"] >= 2000))
         average_power = np.linalg.norm(self._cur_spectrogram_mic["spectrogram"][:,:,mid_freq_ids], axis=(2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
         average_power_high = np.mean(np.abs(self._cur_spectrogram_mic["spectrogram"][:,:,high_freq_ids]), axis=(1,2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
         average_power_main = np.mean(np.abs(self._cur_spectrogram_mic["spectrogram"][:,:,main_freq_ids]), axis=(1,2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
-        max_average_power =  np.max(average_power, axis=1)
+        # max_average_power =  np.max(average_power, axis=1)
         average_power = np.linalg.norm(average_power, axis=(1))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
-        # Todo:
-        #   baseline: rolling average of mic -> cut off first 2400 and last 2400
-        #   do: subtract that average already at the start
-        #           and THEN do the histogram thing
-        #   Or alternatively:
-        #       look at the "intensities" in the spectrogram, but only between 4000 and 8000
 
         # * Determine the threshold as the dB-level above which a given fraction of all sequences lies
-        # TODO: Edit: This just doesnt work, I can only make it work with manual thresholding.
+        #                                       /-- that log is crucial
         bins, bin_limits, sth_else = plt.hist(np.log(average_power), bins=150, log=True)
-        eps = 1e-20
         total = np.sum( bins )
         thresh_amount = total * self.dB_signal_threshold_fraction
         thresh = bin_limits[0]
@@ -293,8 +261,6 @@ class RecordingDataset():
             if sum_ > thresh_amount:
                 thresh = lim
                 break
-        # good_ids_ = average_power >= thresh #self.dB_signal_threshold_fraction
-        # good_ids = (average_power >= thresh) & (average_power_main >= average_power_high) #self.dB_signal_threshold_fraction
 
         ## Todo: 6e-6 is for: recordings=[11], window_size=512, overlap=0.1, max_freq=8000, min_freq=100,
         ##                  sequence_length=50,
@@ -304,12 +270,6 @@ class RecordingDataset():
         assert np.sum(good_ids) < len(good_ids) * 0.5, "did not manage to filter out enough silence."
         # good_ids = average_power >=  self.dB_signal_threshold_fraction
 
-        # # From Burak's code
-        # window = 2400
-        # abs_mic = np.absolute(self._cur_audio_mic)
-        # mean_pd_abs = pd.Series(abs_mic).rolling(window=window).mean().iloc[window - 1:].values
-        # plt.plot(mean_pd_abs)
-
         for spectro_dict in [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2]:
             spectro_dict["spectrogram"] = spectro_dict["spectrogram"][good_ids, ...]
             spectro_dict["t"] = spectro_dict["t"][good_ids]
@@ -317,6 +277,7 @@ class RecordingDataset():
 
 
         # 6. create shuffled or non-shuffled indices for this recording
+        # -- very useless right now
         self._shuffled_recording_indices = np.array(list(np.arange((self._cur_spectrogram_mic["spectrogram"].shape[0]))))
         if self.do_shuffle:
             np.random.shuffle(self._shuffled_recording_indices)
@@ -325,7 +286,8 @@ class RecordingDataset():
 
 
     def yield_batches(self, batch_size=-1):
-        ''' Use via:
+        ''' Todo: Not sure, maybe store to disk and do batch-loading elsewhere.
+            Use via:
                 >> for batch in bla.yield_batches():
                 >>      ... # do sth with batch
             Returns:
@@ -389,9 +351,8 @@ class RecordingDataset():
 
 
 
-def first_try_plot():
+def dont_run_just_annotation():
     path = config["DATAPATH"]
-
     filenames = ["2018-08-14/" + nm for nm in [
         "b8p2male-b10o15female_5_DAQmxChannels.w64",     # 1 channel   <--- Microphone! We don't use it, not aligned with the backpacks
         # SDR: One of the three channels is microphone
@@ -406,80 +367,18 @@ def first_try_plot():
         "b8p2male-b10o15female_5_SdrChannelList.csv",
     ]]
 
-    #
-    #  What are S_trivial, S_clean? :
-    #   S_trivial: Create a measure for silence -> automatically detect recordings where only one bird is vocalizing
-    #   S_clean:   Same, we have to extract those parts
-    #
-
-    for fn in filenames[:-1]:
-        filename0 = os.path.join(path, fn)
-        with open(filename0, 'rb') as f:
-                Audiodata, samplerate = sf.read(f)
-
-        ########################
-
-        # **  From:
-        #       https://stackoverflow.com/questions/24382832/audio-spectrum-extraction-from-audio-file-by-python
-
-        #fs, Audiodata = wavfile.read(filename0)
-
-        # Plot the audio signal in time
-        import matplotlib.pyplot as plt
-        plt.figure()
-        plt.plot(Audiodata[:10000000])
-        plt.title('Audio signal in time', size=16)
-        # # spectrum
-        # from scipy.fftpack import fft  # fourier transform
-        # n = len(Audiodata)
-        # AudioFreq = fft(Audiodata, axis=0)
-        # AudioFreq = AudioFreq[0:int(np.ceil((n + 1) / 2.0))]  # Half of the spectrum
-        # MagFreq = np.abs(AudioFreq)  # Magnitude
-        # MagFreq = MagFreq / float(n)
-        # # power spectrum
-        # MagFreq = MagFreq ** 2
-        # if n % 2 > 0:  # ffte odd
-        #     MagFreq[1:len(MagFreq)] = MagFreq[1:len(MagFreq)] * 2
-        # else:  # fft even
-        #     MagFreq[1:len(MagFreq) - 1] = MagFreq[1:len(MagFreq) - 1] * 2
-        #
-        # plt.figure()
-        # freqAxis = np.arange(0, int(np.ceil((n + 1) / 2.0)), 1.0) * (samplerate / n);
-        # plt.plot(freqAxis / 1000.0, 10 * np.log10(MagFreq))  # Power spectrum
-        # plt.xlabel('Frequency (kHz)');
-        # plt.ylabel('Power spectrum (dB)');
-        #
-        # # Spectrogram
-        # from scipy import signal
-        # N = 512  # Number of point in the fft
-        # if len(Audiodata.shape) == 1:
-        #     Audiodata = Audiodata[:, np.newaxis]
-        # for i in range(Audiodata.shape[1]):
-        #         f, t, Sxx = signal.spectrogram(Audiodata[:10000000, i], samplerate, window=signal.blackman(N), nfft=N)
-        #         plt.figure()
-        #         plt.pcolormesh(t, f, 10 * np.log10(Sxx))  # dB spectrogram
-        #         # plt.pcolormesh(t, f,Sxx) # Lineal spectrogram
-        #         plt.ylabel('Frequency [Hz]')
-        #         plt.xlabel('Time [seg]')
-        #         plt.title('Spectrogram with scipy.signal', size=16);
-
-        plt.pause(0.001)
-
-    print("breakpoint")
 
 
 
 def test_data_laoding():
-    DS = RecordingDataset(recordings=[11], window_size=512, overlap=0.7, max_freq=8000, min_freq=100,
-                          sequence_length=100, dB_signal_threshold_fraction=0.05 )# 0.065)
+    DS = RecordingDataset(recordings=[51], window_size=512, overlap=0.7, max_freq=8000, min_freq=100,
+                          sequence_length=100, dB_signal_threshold_fraction=0.05 )
     for b in DS.yield_batches():
         DS.save_batch(b, base_path="../data/")
         DS.plot_batch(b, base_path="../plots/")
-        # mic, b1, b2, strength = b
         mic, b1, b2, rec = b
         print("hello")
 
-     # todo: continue when batching is implemented
 
 
 if __name__ == '__main__':
