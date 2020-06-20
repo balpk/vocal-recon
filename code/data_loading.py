@@ -164,7 +164,7 @@ class RecordingDataset():
         '''
         # 1. read the files
         filenm = channel_filename(recording_nr)
-        strength_filenm = strength_filename(recording_nr)
+        # strength_filenm = strength_filename(recording_nr)
         with open(filenm, 'rb') as f:
             Audiodata, _samplerate_bad = sf.read(f)
         self._cur_audio_mic = Audiodata[:, 0]
@@ -172,8 +172,8 @@ class RecordingDataset():
         self._cur_audio_bird2 = Audiodata[:, 2]
         del Audiodata
 
-        with open(strength_filenm, 'rb') as f:
-            self._cur_strength_raw, _str_samplerate = sf.read(f)
+        # with open(strength_filenm, 'rb') as f:
+        #     self._cur_strength_raw, _str_samplerate = sf.read(f)
 
         # Filter to reduce low-frequency offset, and make fourier transform within our frequency range work better
         sos = signal.butter(10, [15, 8000], 'bp', fs=24000, output='sos')
@@ -185,14 +185,17 @@ class RecordingDataset():
         f, t, Sxx = signal.spectrogram(self._cur_audio_mic, self.samplerate, window=signal.hamming(self.window_size, sym=False), #window=signal.blackman(self.window_size),
                                        nfft=self.window_size, noverlap=self.noverlap, scaling="spectrum")
         self._cur_spectrogram_mic = {"frequencies": f, "t": t, "spectrogram": Sxx}
-        f, t2, Sxx = signal.spectrogram(self._cur_audio_bird1, self.samplerate,window=signal.hamming(self.window_size, sym=False),# window=signal.blackman(self.window_size),
+        del f, t, Sxx
+        f, t, Sxx = signal.spectrogram(self._cur_audio_bird1, self.samplerate,window=signal.hamming(self.window_size, sym=False),# window=signal.blackman(self.window_size),
                                        nfft=self.window_size, noverlap=self.noverlap, scaling="spectrum")
-        self._cur_spectrogram_bird1 = {"frequencies": f, "t": t2, "spectrogram": Sxx}
-        f, t3, Sxx = signal.spectrogram(self._cur_audio_bird2, self.samplerate, window=signal.hamming(self.window_size, sym=False),#window=signal.blackman(self.window_size),
+        self._cur_spectrogram_bird1 = {"frequencies": f, "t": t, "spectrogram": Sxx}
+        del f, t, Sxx
+        f, t, Sxx = signal.spectrogram(self._cur_audio_bird2, self.samplerate, window=signal.hamming(self.window_size, sym=False),#window=signal.blackman(self.window_size),
                                        nfft=self.window_size, noverlap=self.noverlap, scaling="spectrum")
-        self._cur_spectrogram_bird2 = {"frequencies": f, "t": t3, "spectrogram": Sxx}
-        assert np.all(t == t2)
-        assert np.all(t == t3)
+        self._cur_spectrogram_bird2 = {"frequencies": f, "t": t, "spectrogram": Sxx}
+        del f, t, Sxx
+        # assert np.all(t == t2)
+        # assert np.all(t == t3)
         # reduce to the frequency band we want
         if self.max_freq is not None or (self.min_freq is not None):
             if self.max_freq is not None:
