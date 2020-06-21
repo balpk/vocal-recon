@@ -102,7 +102,7 @@ class RecordingDataset():
 
 
     def __init__(self, recordings:list=[3], window_size=512, overlap=0.875, max_freq=8000, min_freq=100, sequence_duration=100, do_shuffle=True,
-                 dB_signal_threshold_fraction=0.05): #, remove_noise=False, remove_simultaneous_vocalization=False):
+                 dB_signal_upper_percentile=0.05): #, remove_noise=False, remove_simultaneous_vocalization=False):
         '''
         :param recordings: which recording files to read
         :param window_size: how many samples the fft window should span
@@ -110,16 +110,15 @@ class RecordingDataset():
         :param max_freq, min_freq: Band-pass filter the signal to this range.
                 (It's already within the audible range, but the Nature paper reduces to between ? and 8kHz)
         :param sequence_duration: In seconds. Cut the recording into sequences of this length
-        :param dB_signal_threshold_fraction: The norm of each spectrogram-sequence will be compared to this, and if the norm is below, the sequence is removed.
-                                This is to filter out the parts of the recording without vocalizations. How to set this threshold is not quite clear though.
-        :param remove_noise: If True, return S_clean (todo)
-        :param remove_simultaneous_vocalization: If True, return S_trivial (todo)
+        :param dB_signal_upper_percentile: Only look at the upper x-th percentile of the sequences, in terms of their intensity.
+                    This is to filter out the parts of the recording without vocalizations. This parameter might have to be adjusted between recordings... 
+
         '''
         self.window_size = window_size
         self.overlap = overlap
         self.noverlap = int(np.floor(self.window_size * self.overlap))
-        assert dB_signal_threshold_fraction > 0
-        self.dB_signal_threshold_fraction = dB_signal_threshold_fraction
+        assert dB_signal_upper_percentile > 0
+        self.dB_signal_upper_percentile = dB_signal_upper_percentile
         assert  0 <= overlap < 1, "overlap as fraction of window size, so < 1 (0: no overlap)"
         valid_recording_nrs = sorted(list(RECORDING_DAYS.keys()))
         assert all([r in valid_recording_nrs for r in recordings]), "Only those recording numbers are available: "+str(valid_recording_nrs)
@@ -251,7 +250,7 @@ class RecordingDataset():
          # max_average_power     =  np.max(average_power, axis=1)
         average_power           = np.linalg.norm(average_power, axis=(1))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
 
-        thresh = self.find_good_absolute_threshold(average_power, self.dB_signal_threshold_fraction)
+        thresh = self.find_good_absolute_threshold(average_power, self.dB_signal_upper_percentile)
         # the two latter ones shouldn't be too far apart
 
         ## Todo: 6e-6 is for: recordings=[11], window_size=512, overlap=0.1, max_freq=8000, min_freq=100,
@@ -433,7 +432,7 @@ class RecordingDataset():
         for spectrogram, name in [(bird1, "bird1"), (mic, "mic"),  (bird2, "bird2")]:
             t = spectrogram["t"]
             f = spectrogram["frequencies"]
-git             Sxx = spectrogram["spectrogram"]
+            Sxx = spectrogram["spectrogram"]
             for i, seq in enumerate(Sxx):
                 t_ = t[i]
                 plt.figure()
@@ -446,6 +445,7 @@ git             Sxx = spectrogram["spectrogram"]
                 # plt.pause(0.001)
                 # plt.show()
                 plt.savefig(os.path.join(path,"seq_%04d_%s" % (i, name)))
+                plt.close()
 
     def save_batch(self, batch, base_path=""):
         ''' takes what's returned by yield_batches() or all_recordings_data() in one step and stores
@@ -515,11 +515,11 @@ def dont_run_just_annotation():
 
 
 def test_data_laoding():
-    DS = RecordingDataset(recordings=[51], window_size=512, overlap=0.7, max_freq=8000, min_freq=100,
-                          sequence_duration=0.3, dB_signal_threshold_fraction=0.05)
+    DS = RecordingDataset(recordings=[11], window_size=512, overlap=0.7, max_freq=8000, min_freq=100,
+                          sequence_duration=0.3, dB_signal_upper_percentile=0.05)
     for b in DS.all_recordings_data(noise_threshold=0.25, noise_fraction=0.01, test_noise_detection=False):
-        DS.plot_batch(b, base_path="../plots/")
         DS.save_batch(b, base_path="../data/")
+        DS.plot_batch(b, base_path="../plots/")
         mic, b1, b2, audio3c, rec = b
         print("hello")
 
