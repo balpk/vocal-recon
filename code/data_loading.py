@@ -102,7 +102,7 @@ class RecordingDataset():
 
 
     def __init__(self, recordings:list=[3], window_size=512, overlap=0.875, max_freq=8000, min_freq=100, sequence_length=100, do_shuffle=True,
-                 dB_signal_threshold_fraction=0.1, remove_noise=False, remove_simultaneous_vocalization=False):
+                 dB_signal_threshold_fraction=0.05, remove_noise=False, remove_simultaneous_vocalization=False):
         '''
         :param recordings: which recording files to read
         :param window_size: how many samples the fft window should span
@@ -128,15 +128,17 @@ class RecordingDataset():
         self.do_shuffle = do_shuffle
         self.max_freq = max_freq
         self.min_freq = min_freq
-        self.remove_noise = remove_noise
-        self.remove_simultaneous_vocalization = remove_simultaneous_vocalization
+        # self.remove_noise = remove_noise
+        # self.remove_simultaneous_vocalization = remove_simultaneous_vocalization
 
 
         self.samplerate = 24000 # 24 kHz
+        self.noise_fraction = 0.1 # Todo: Tune this parameter. Something is considered radio noise if
+                                  #   intensity >8kHz is  higher than intensity in typical vocalization range.
 
         # for batch loading:
         self._shuffled_recording_indices = None
-        self._shuffled_recordings = np.array(recordings)
+        self._recordings = np.array(recordings)
         self._cur_spectrogram_bird1 = None #  N x seq_length x nr_frequency_bins
         self._cur_spectrogram_bird2 = None #  N x seq_length x nr_frequency_bins
         self._cur_spectrogram_mic = None #  N x seq_length x nr_frequency_bins
@@ -147,14 +149,18 @@ class RecordingDataset():
         # self._cur_strength_raw = None
 
 
-    def _read_recording(self, recording_nr):
+    def _read_recording(self, recording_nr, remove_noise_bird_1=True, remove_noise_bird_2=True, noise_threshold=0.3,
+                        noise_fraction=0.5):
         '''
         Reads a single recording and performs all the preprocessing
         The data can then be "shuffled" and returned, either as whole or in batches
         :param recording_nr
-        :param remove_noise: Todo, cut or filter out noise -> S_clean
-        :param remove_simultaneous_vocalization: Todo; if True return S_trivial
-
+        :param remove_noise_bird_1: Cut or filter out parts with radio noise in backpack of bird 1
+        :param remove_noise_bird_2: Cut or filter out parts with radio noise in backpack of bird 2
+                                    For S_clean, set both remove_noise_bird_i to True.
+        :param noise_threshold, :param noise_fraction: See function get_noise_indices(). For finding radio noise.
+                Lower threshold detects less noise, higher fraction detects less noise.
+                Values: noise_threshold of 0.2 or 0.3 seemed to work well with noise_fraction=0.5.
         :return:
             sets internal variables:
                 - bird channel 1, spectrogram
@@ -170,13 +176,16 @@ class RecordingDataset():
         self._cur_audio_mic = Audiodata[:, 0]
         self._cur_audio_bird1 = Audiodata[:, 1]
         self._cur_audio_bird2 = Audiodata[:, 2]
+
+        self.noise_ids_bird1, self.noise_ids_bird2 = self.get_noise_indices(self._cur_audio_bird1, self._cur_audio_bird2,
+                                                                            noise_threshold=noise_threshold, noise_fraction=noise_fraction)
         del Audiodata
 
         # with open(strength_filenm, 'rb') as f:
         #     self._cur_strength_raw, _str_samplerate = sf.read(f)
 
         # Filter to reduce low-frequency offset, and make fourier transform within our frequency range work better
-        sos = signal.butter(10, [15, 8000], 'bp', fs=24000, output='sos')
+        sos = signal.butter(10, [self.min_freq+1, self.max_freq-1], 'bp', fs=self.samplerate, output='sos')
         self._cur_audio_mic = signal.sosfilt(sos, self._cur_audio_mic)
         self._cur_audio_bird1 = signal.sosfilt(sos, self._cur_audio_bird1)
         self._cur_audio_bird2 = signal.sosfilt(sos, self._cur_audio_bird2)
@@ -194,20 +203,8 @@ class RecordingDataset():
                                        nfft=self.window_size, noverlap=self.noverlap, scaling="spectrum")
         self._cur_spectrogram_bird2 = {"frequencies": f, "t": t, "spectrogram": Sxx}
         del f, t, Sxx
-        # assert np.all(t == t2)
-        # assert np.all(t == t3)
-        # reduce to the frequency band we want
-        if self.max_freq is not None or (self.min_freq is not None):
-            if self.max_freq is not None:
-                for spectro_dict in [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2]:
-                    good_ids = spectro_dict["frequencies"] <= self.max_freq
-                    spectro_dict["spectrogram"] = spectro_dict["spectrogram"][good_ids]
-                    spectro_dict["frequencies"] = spectro_dict["frequencies"][good_ids]
-            if self.min_freq is not None:
-                for spectro_dict in [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2]:
-                    good_ids = spectro_dict["frequencies"] >= self.min_freq
-                    spectro_dict["spectrogram"] = spectro_dict["spectrogram"][good_ids]
-                    spectro_dict["frequencies"] = spectro_dict["frequencies"][good_ids]
+
+
 
         # 3. signal strength has a different size of first dimension, but its first dimension corresponds to the time
         #       dimension of the other channels. --> stretch signalStrength array
@@ -236,6 +233,8 @@ class RecordingDataset():
             spectro_dict["spectrogram"] = spectro_dict["spectrogram"].reshape((num_sequences, self.sequence_length, num_freqs ))
             spectro_dict["t"] = spectro_dict["t"][ : self.sequence_length * int(np.floor(num_points / self.sequence_length))]
             spectro_dict["t"] = spectro_dict["t"].reshape(( num_sequences, self.sequence_length))
+
+        # Todo: split original audio into the same chunks as the spectrograms
         # assert num_points == len(self._cur_signal_strength)
         # self._cur_signal_strength = self._cur_signal_strength[ :  self.sequence_length * int(np.floor(num_points / self.sequence_length)), :]
         # self._cur_signal_strength =  self._cur_signal_strength.reshape((num_sequences , self.sequence_length,  3))
@@ -246,31 +245,28 @@ class RecordingDataset():
         mid_freq_ids = ((self._cur_spectrogram_mic["frequencies"] <= 6000) & (self._cur_spectrogram_mic["frequencies"] >= 2000))
         high_freq_ids = ((self._cur_spectrogram_mic["frequencies"] <= 8000) & (self._cur_spectrogram_mic["frequencies"] > 4000))
         main_freq_ids = ((self._cur_spectrogram_mic["frequencies"] <= 4000) & (self._cur_spectrogram_mic["frequencies"] >= 2000))
-        average_power = np.linalg.norm(self._cur_spectrogram_mic["spectrogram"][:,:,mid_freq_ids], axis=(2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
-        average_power_high = np.mean(np.abs(self._cur_spectrogram_mic["spectrogram"][:,:,high_freq_ids]), axis=(1,2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
-        average_power_main = np.mean(np.abs(self._cur_spectrogram_mic["spectrogram"][:,:,main_freq_ids]), axis=(1,2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
-        # max_average_power =  np.max(average_power, axis=1)
-        average_power = np.linalg.norm(average_power, axis=(1))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
+        average_power           = np.linalg.norm(self._cur_spectrogram_mic["spectrogram"][:,:,mid_freq_ids], axis=(2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
+        average_power_high      = np.mean(np.abs(self._cur_spectrogram_mic["spectrogram"][:,:,high_freq_ids]), axis=(1,2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
+        average_power_main      = np.mean(np.abs(self._cur_spectrogram_mic["spectrogram"][:,:,main_freq_ids]), axis=(1,2))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
+         # max_average_power     =  np.max(average_power, axis=1)
+        average_power           = np.linalg.norm(average_power, axis=(1))  # 0.001 #0.000001 # just from inspecting the histogram, 0.001 would be good - but recording 17 then doesnt have any signal?
 
-        # * Determine the threshold as the dB-level above which a given fraction of all sequences lies
-        #                                       /-- that log is crucial
-        bins, bin_limits, sth_else = plt.hist(np.log(average_power), bins=150, log=True)
-        total = np.sum( bins )
-        thresh_amount = total * self.dB_signal_threshold_fraction
-        thresh = bin_limits[0]
-        sum_ = 0
-        for b, lim in zip(bins[::-1], bin_limits[:-1][::-1]):
-            sum_ +=  b
-            if sum_ > thresh_amount:
-                thresh = lim
-                break
+        thresh = self.find_good_absolute_threshold(average_power, self.dB_signal_threshold_fraction)
+        # the two latter ones shouldn't be too far apart
 
         ## Todo: 6e-6 is for: recordings=[11], window_size=512, overlap=0.1, max_freq=8000, min_freq=100,
         ##                  sequence_length=50,
-        #  0.95e-7
         # good_ids = (average_power >= 1e-6) & (average_power_main >= average_power_high) #self.dB_signal_threshold_fraction
-        good_ids = (average_power >= np.exp(thresh)) & (average_power_main >= average_power_high) #self.dB_signal_threshold_fraction
+        good_ids = (average_power >= thresh) & (average_power_main >= average_power_high) #self.dB_signal_threshold_fraction
+        # * Try to remove parts with radio noise, for any of the two birds
+        if remove_noise_bird_1:
+            good_ids = good_ids & (np.bitwise_not(self.noise_ids_bird1))
+            # to have a look whether the noise indices are accurate, comment out one of the two selections and remove the "not". Then have a look whether that's uniquely radio noise parts
+        if remove_noise_bird_2:
+            good_ids = good_ids & np.bitwise_not(self.noise_ids_bird2)
+
         assert np.sum(good_ids) < len(good_ids) * 0.5, "did not manage to filter out enough silence."
+        assert np.sum(good_ids) > 0, "Change your noise-filtering settings - everything was filtered out. Parameters are noise_threshold and noise_fraction "
         # good_ids = average_power >=  self.dB_signal_threshold_fraction
 
         for spectro_dict in [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2]:
@@ -278,15 +274,104 @@ class RecordingDataset():
             spectro_dict["t"] = spectro_dict["t"][good_ids]
         # self._cur_signal_strength = self._cur_signal_strength[good_ids, ...]
 
+        # reduce to the frequency band we want
+        if self.max_freq is not None:
+            for spectro_dict in [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2]:
+                good_ids = spectro_dict["frequencies"] <= self.max_freq
+                spectro_dict["spectrogram"] = spectro_dict["spectrogram"][..., good_ids]
+                spectro_dict["frequencies"] = spectro_dict["frequencies"][..., good_ids]
+        if self.min_freq is not None:
+            for spectro_dict in [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2]:
+                good_ids = spectro_dict["frequencies"] >= self.min_freq
+                spectro_dict["spectrogram"] = spectro_dict["spectrogram"][..., good_ids]
+                spectro_dict["frequencies"] = spectro_dict["frequencies"][..., good_ids]
 
-        # 6. create shuffled or non-shuffled indices for this recording
-        # -- very useless right now
-        self._shuffled_recording_indices = np.array(list(np.arange((self._cur_spectrogram_mic["spectrogram"].shape[0]))))
-        if self.do_shuffle:
-            np.random.shuffle(self._shuffled_recording_indices)
+
+        # # 6. create shuffled or non-shuffled indices for this recording
+        # # -- very useless right now
+        # self._shuffled_recording_indices = np.array(list(np.arange((self._cur_spectrogram_mic["spectrogram"].shape[0]))))
+        # if self.do_shuffle:
+        #     np.random.shuffle(self._shuffled_recording_indices)
+
+    def get_noise_indices(self, recording_bird1, recording_bird2, noise_threshold=0.2, noise_fraction=0.5):
+        ''' Had to separate this from the main setup, because my RAM can't handle another two huge arrays.
+            :param noise_threshold: what upper percentile of values to consider as something other than silence.
+            :param noise_fraction: Used to detect noise: Intensity in higher frequency range must be at least
+                                    [this fraction] x (intensity in bird vocals frequency range) to be considered noise.
+            :returns two boolean lists across the spectrogram-time dimension, where true means "probably noise".
+                    Returns one such list per bird.'''
+        f, t, Sxx = signal.spectrogram(recording_bird1, self.samplerate, window=signal.hamming(self.window_size, sym=False),# window=signal.blackman(self.window_size),
+                                       nfft=self.window_size, noverlap=self.noverlap, scaling="spectrum")
+        radio_spectrogram_bird1 = {"frequencies": f, "t": t, "spectrogram": Sxx}
+        del f, t, Sxx
+        f, t, Sxx = signal.spectrogram(recording_bird2, self.samplerate, window=signal.hamming(self.window_size, sym=False),#window=signal.blackman(self.window_size),
+                                       nfft=self.window_size, noverlap=self.noverlap, scaling="spectrum")
+        radio_spectrogram_bird2 = {"frequencies": f, "t": t, "spectrogram": Sxx}
+        del f, t, Sxx
+
+        # 5. split all into sequence-length chunks (reshape)
+        num_sequences = int(np.floor((radio_spectrogram_bird2["spectrogram"].shape[1]) / self.sequence_length))
+        for spectro_dict in [radio_spectrogram_bird1, radio_spectrogram_bird2]:
+            num_freqs = spectro_dict["spectrogram"].shape[0]
+            num_points =  spectro_dict["spectrogram"].shape[-1]
+            assert num_freqs == len(spectro_dict["frequencies"])
+            spectro_dict["spectrogram"] = spectro_dict["spectrogram"][..., : self.sequence_length * int(np.floor(num_points / self.sequence_length))]
+            spectro_dict["spectrogram"] = spectro_dict["spectrogram"].transpose() # --> frequency in last dimension
+            spectro_dict["spectrogram"] = spectro_dict["spectrogram"].reshape((num_sequences, self.sequence_length, num_freqs ))
+            spectro_dict["t"] = spectro_dict["t"][ : self.sequence_length * int(np.floor(num_points / self.sequence_length))]
+            spectro_dict["t"] = spectro_dict["t"].reshape(( num_sequences, self.sequence_length))
+
+        radio_freq_ids_bird1 = ((radio_spectrogram_bird1["frequencies"] <= 12000) & (
+                                 radio_spectrogram_bird1["frequencies"] >= 8000))
+        radio_freq_ids_bird2 = ((radio_spectrogram_bird2["frequencies"] <= 12000) & (
+                                 radio_spectrogram_bird2["frequencies"] >= 8000))
+        mid_freq_ids = ((radio_spectrogram_bird1["frequencies"]  <= 6000) & (
+                         radio_spectrogram_bird1["frequencies"]  >= 2000))
+        main_freq_ids = ((radio_spectrogram_bird1["frequencies"]  <= 4000) & (
+                          radio_spectrogram_bird1["frequencies"]  >= 2000))
+        average_power_radio_bird1 = np.mean(np.abs(radio_spectrogram_bird1["spectrogram"][:, :, radio_freq_ids_bird1]),
+                                            axis=(1, 2))
+        average_power_bird1 = np.mean(np.abs(radio_spectrogram_bird1["spectrogram"][:, :, mid_freq_ids]), axis=(1, 2))
+        average_power_radio_bird2 = np.mean(np.abs(radio_spectrogram_bird2["spectrogram"][:, :, radio_freq_ids_bird2]),
+                                            axis=(1, 2))
+        average_power_bird2 = np.mean(np.abs(radio_spectrogram_bird2["spectrogram"][:, :, mid_freq_ids]), axis=(1, 2))
+
+        # * Find parts with radio noise, for any of the two birds
+        thresh_radio_bird1 = self.find_good_absolute_threshold(average_power_bird1, noise_threshold)
+        noise_ids_bird1 = (average_power_radio_bird1 > noise_fraction * average_power_bird1) & \
+                            (average_power_radio_bird1 >= thresh_radio_bird1)
+        thresh_radio_bird2 = self.find_good_absolute_threshold(average_power_bird2, noise_threshold)
+        noise_ids_bird2 = (average_power_radio_bird1 <= noise_fraction * average_power_bird2 ) & \
+                            (average_power_radio_bird2 >= thresh_radio_bird2)
+
+        del radio_spectrogram_bird1, radio_spectrogram_bird2
+        del average_power_bird1, average_power_bird2
+        del average_power_radio_bird1, average_power_radio_bird2
+        del radio_freq_ids_bird1, radio_freq_ids_bird2
+
+        return noise_ids_bird1, noise_ids_bird2
 
 
+    @staticmethod
+    def find_good_absolute_threshold(power, upper_percentile=0.05):
+        '''  Determine the threshold as the dB-level above which a given fraction of all sequences lies
+              :param power: a 1-D array or list. Use the histogram distribution of log(power) to find a threshold.
+              :param upper_percentile: The threshold will be the bin lower-bounding the upper "upper_percentile"
+                                        percent of values in array :param power. It's approximately the x-th upper percentile.
+        '''
 
+        #                                       /-- that log is crucial
+        bins, bin_limits, sth_else = plt.hist(np.log(power), bins=150, log=True)
+        total = np.sum( bins )
+        thresh_amount = total * upper_percentile
+        thresh = bin_limits[0]
+        sum_ = 0
+        for b, lim in zip(bins[::-1], bin_limits[:-1][::-1]):
+            sum_ +=  b
+            if sum_ > thresh_amount:
+                thresh = lim
+                break
+        return np.exp(thresh)
 
     def yield_batches(self, batch_size=-1):
         ''' Todo: Not sure, maybe store to disk and do batch-loading elsewhere.
@@ -303,21 +388,30 @@ class RecordingDataset():
                 Returns three dicts with spectrograms and one array of signal strengths, scaled to the same time points
         '''
         if self.do_shuffle:
-            np.random.shuffle(self._shuffled_recordings)
-        for rec in self._shuffled_recordings:
+            np.random.shuffle(self._recordings)
+        for rec in self._recordings:
             self._read_recording(rec)
             if batch_size < 0:
-                yield [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2, rec,]
+                yield [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2,
+                       [self._cur_audio_mic, self._cur_audio_bird1, self._cur_audio_bird2],  rec]
                        # self._cur_signal_strength]
             else:
                 raise NotImplementedError("Batch-processing not implemented yet (todo; not too difficult though, just "
                                           "shuffle the indices of the whole recording, and create batch_size-sized batches from them)")
 
+    def all_recordings_data(self):
+        for rec in self._recordings:
+            self._read_recording(rec)
+            yield [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2,
+                   [self._cur_audio_mic, self._cur_audio_bird1, self._cur_audio_bird2], rec,]
 
     def plot_batch(self, batch, base_path=""):
-        ''' takes what's returned by yield_batches() in one step and creates spectrogram & strength plots'''
+        ''' takes what's returned by yield_batches() or all_recordings_data()
+            in one step and creates spectrogram & strength plots'''
         # mic, bird1, bird2, signal_strength = batch
-        mic, bird1, bird2, rec_nr = batch
+        mic, bird1, bird2, audio3c, recording_nr = batch
+        path = os.path.join(base_path, "rec%02d/" % (recording_nr))
+        utils.ensure_dir(path)
         for spectrogram, name in [(mic, "mic"), (bird1, "bird1"), (bird2, "bird2")]:
             t = spectrogram["t"]
             f = spectrogram["frequencies"]
@@ -333,14 +427,43 @@ class RecordingDataset():
 
                 # plt.pause(0.001)
                 # plt.show()
-                plt.savefig(base_path + "_" + str(i) + "_" + name )
+                plt.savefig(os.path.join(path,"seq_%04d_%s" % (i, name)))
 
     def save_batch(self, batch, base_path=""):
-        ''' takes what's returned by yield_batches() in one step and stores each sequence to a separate .npy file.'''
+        ''' takes what's returned by yield_batches() or all_recordings_data() in one step and stores
+            each sequence to a separate .npy file.'''
         # mic, bird1, bird2, signal_strength = batch
-        mic, bird1, bird2, recording_nr = batch
+        mic, bird1, bird2, audio3c, recording_nr = batch
+        audio_mic, audio_bird1, audio_bird2 = audio3c
         path = os.path.join(base_path, "rec%02d/" % (recording_nr))
         utils.ensure_dir(path)
+
+        # Audio / the original time series: Need to split into same sections as the spectrograms
+        def t_index(t):
+            sample_pt = t * self.samplerate
+            return int(np.round(sample_pt))
+        Sxx = mic["spectrogram"]
+        t = mic["t"]
+        all_seq_lens = np.array([t_index(np.max(t_)) - t_index(np.min(t_)) for t_ in t])
+        assert len(np.unique(
+            all_seq_lens)) == 1, "Error, we need same-length sequences, but there were different lengths or an empty array: " + str(
+            np.unique(all_seq_lens))
+
+        for i, (seq, t_seq) in enumerate(zip(Sxx, t)):
+            t0 = t_seq[0]
+            t1 = t_seq[-1]
+            assert t0 == np.min(t_seq)
+            assert t1 == np.max(t_seq)
+            audio_mic_ = audio_mic[t_index(t0): t_index(t1) + 1]
+            audio_bird1_ = audio_bird1[t_index(t0): t_index(t1) + 1]
+            audio_bird2_ = audio_bird2[t_index(t0): t_index(t1) + 1]
+
+            # Save as .w64 file at correct sampling rate
+            sf.write(os.path.join(path, "seq_%04d_mic.w64"% (i,)), audio_mic_, self.samplerate)
+            sf.write(os.path.join(path, "seq_%04d_bird1.w64" % (i,)), audio_bird1_, self.samplerate )
+            sf.write(os.path.join(path, "seq_%04d_bird2.w64" % (i,)), audio_bird2_, self.samplerate)
+
+        # Store spectrograms
         for spectrogram, name in [(mic, "mic"), (bird1, "bird1"), (bird2, "bird2")]:
             t = spectrogram["t"]
             f = spectrogram["frequencies"]
@@ -376,10 +499,10 @@ def dont_run_just_annotation():
 def test_data_laoding():
     DS = RecordingDataset(recordings=[51], window_size=512, overlap=0.7, max_freq=8000, min_freq=100,
                           sequence_length=100, dB_signal_threshold_fraction=0.05 )
-    for b in DS.yield_batches():
-        DS.save_batch(b, base_path="../data/")
+    for b in DS.all_recordings_data():
         DS.plot_batch(b, base_path="../plots/")
-        mic, b1, b2, rec = b
+        DS.save_batch(b, base_path="../data/")
+        mic, b1, b2, audio3c, rec = b
         print("hello")
 
 
