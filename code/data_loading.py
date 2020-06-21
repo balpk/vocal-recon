@@ -101,7 +101,7 @@ class RecordingDataset():
     '''
 
 
-    def __init__(self, recordings:list=[3], window_size=512, overlap=0.875, max_freq=8000, min_freq=100, sequence_length=100, do_shuffle=True,
+    def __init__(self, recordings:list=[3], window_size=512, overlap=0.875, max_freq=8000, min_freq=100, sequence_duration=100, do_shuffle=True,
                  dB_signal_threshold_fraction=0.05): #, remove_noise=False, remove_simultaneous_vocalization=False):
         '''
         :param recordings: which recording files to read
@@ -109,7 +109,7 @@ class RecordingDataset():
         :param overlap between windows, in fractions of window size
         :param max_freq, min_freq: Band-pass filter the signal to this range.
                 (It's already within the audible range, but the Nature paper reduces to between ? and 8kHz)
-        :param sequence_length: Cut the recording into sequences of this length
+        :param sequence_duration: In seconds. Cut the recording into sequences of this length
         :param dB_signal_threshold_fraction: The norm of each spectrogram-sequence will be compared to this, and if the norm is below, the sequence is removed.
                                 This is to filter out the parts of the recording without vocalizations. How to set this threshold is not quite clear though.
         :param remove_noise: If True, return S_clean (todo)
@@ -124,17 +124,13 @@ class RecordingDataset():
         valid_recording_nrs = sorted(list(RECORDING_DAYS.keys()))
         assert all([r in valid_recording_nrs for r in recordings]), "Only those recording numbers are available: "+str(valid_recording_nrs)
         self.recordings = recordings
-        self.sequence_length = sequence_length
         self.do_shuffle = do_shuffle
         self.max_freq = max_freq
         self.min_freq = min_freq
-        # self.remove_noise = remove_noise
-        # self.remove_simultaneous_vocalization = remove_simultaneous_vocalization
-
 
         self.samplerate = 24000 # 24 kHz
-        self.noise_fraction = 0.1 # Todo: Tune this parameter. Something is considered radio noise if
-                                  #   intensity >8kHz is  higher than intensity in typical vocalization range.
+        self.sequence_duration = sequence_duration # in seconds
+        self.sequence_length = None # Length of >>spectrogram<<-sequences. Set in other code part.
 
         # for batch loading:
         self._shuffled_recording_indices = None
@@ -204,8 +200,10 @@ class RecordingDataset():
         f, t, Sxx = signal.spectrogram(self._cur_audio_bird2, self.samplerate, window=signal.hann(self.window_size, sym=False),#window=signal.blackman(self.window_size),
                                        nfft=self.window_size, noverlap=self.noverlap, scaling="spectrum")
         self._cur_spectrogram_bird2 = {"frequencies": f, "t": t, "spectrogram": Sxx}
-        del f, t, Sxx
+        del f, Sxx
 
+        self.determine_sequence_length(t)
+        del t
 
 
         # 3. signal strength has a different size of first dimension, but its first dimension corresponds to the time
@@ -268,8 +266,8 @@ class RecordingDataset():
             good_ids = good_ids & np.bitwise_not(self.noise_ids_bird2)
 
         if test_noise_detection:
-            good_ids = self.noise_ids_bird1
-            good_ids[:200] = False # Else there will be way too many plots
+            good_ids = self.noise_ids_bird1.copy()
+            good_ids[200:] = False # Else there will be way too many plots
 
         assert np.sum(good_ids) < len(good_ids) * 0.5, "did not manage to filter out enough silence."
         assert np.sum(good_ids) > 0, "Change your noise-filtering settings - everything was filtered out. Parameters are noise_threshold and noise_fraction "
@@ -313,6 +311,7 @@ class RecordingDataset():
         f, t, Sxx = signal.spectrogram(recording_bird2, self.samplerate, window=signal.hann(self.window_size, sym=False),#window=signal.blackman(self.window_size),
                                        nfft=self.window_size, noverlap=self.noverlap, scaling="spectrum")
         radio_spectrogram_bird2 = {"frequencies": f, "t": t, "spectrogram": Sxx}
+        self.determine_sequence_length(t)
         del f, t, Sxx
 
         # 5. split all into sequence-length chunks (reshape)
@@ -347,7 +346,7 @@ class RecordingDataset():
         noise_ids_bird1 = (average_power_radio_bird1 >= noise_fraction * average_power_bird1) & \
                             (average_power_radio_bird1 >= thresh_radio_bird1)
         thresh_radio_bird2 = self.find_good_absolute_threshold(average_power_bird2, noise_threshold)
-        noise_ids_bird2 = (average_power_radio_bird1 >= noise_fraction * average_power_bird2 ) & \
+        noise_ids_bird2 = (average_power_radio_bird2 >= noise_fraction * average_power_bird2 ) & \
                             (average_power_radio_bird2 >= thresh_radio_bird2)
 
         del radio_spectrogram_bird1, radio_spectrogram_bird2
@@ -357,6 +356,18 @@ class RecordingDataset():
 
         return noise_ids_bird1, noise_ids_bird2
 
+
+    def determine_sequence_length(self, t):
+        t0 = t[0]
+        length = 1
+        for t_ in t[1:]:
+            length += 1
+            dt = t_ - t0
+            if dt > self.sequence_duration:
+                if self.sequence_length is not None:
+                    assert length == self.sequence_length
+                self.sequence_length = length
+                return
 
     @staticmethod
     def find_good_absolute_threshold(power, upper_percentile=0.05):
@@ -505,8 +516,8 @@ def dont_run_just_annotation():
 
 def test_data_laoding():
     DS = RecordingDataset(recordings=[51], window_size=512, overlap=0.7, max_freq=8000, min_freq=100,
-                          sequence_length=100, dB_signal_threshold_fraction=0.05)
-    for b in DS.all_recordings_data(noise_threshold=0.3, noise_fraction=0.02, test_noise_detection= False):
+                          sequence_duration=0.3, dB_signal_threshold_fraction=0.05)
+    for b in DS.all_recordings_data(noise_threshold=0.25, noise_fraction=0.01, test_noise_detection=False):
         DS.plot_batch(b, base_path="../plots/")
         DS.save_batch(b, base_path="../data/")
         mic, b1, b2, audio3c, rec = b
