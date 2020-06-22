@@ -429,14 +429,14 @@ class RecordingDataset():
         mic, bird1, bird2, audio3c, recording_nr = batch
         path = os.path.join(base_path, "rec%02d/" % (recording_nr))
         utils.ensure_dir(path)
-        for spectrogram, name in [(bird1, "bird1"), (mic, "mic"),  (bird2, "bird2")]:
+        for spectrogram, name in [(mic, "mic"),  (bird1, "bird1"),   (bird2, "bird2")]:
             t = spectrogram["t"]
             f = spectrogram["frequencies"]
             Sxx = spectrogram["spectrogram"]
             for i, seq in enumerate(Sxx):
                 t_ = t[i]
                 plt.figure()
-                plt.pcolormesh(t_, f, 10 * np.log10(2e-9 + seq.transpose()))  # dB spectrogram
+                plt.pcolormesh(t_, f, 10 * np.log10(1e-8 + seq.transpose()))  # dB spectrogram
                 # plt.pcolormesh(t, f,Sxx) # Linear spectrogram
                 plt.ylabel('Frequency [Hz]')
                 plt.xlabel('Time [sec]')
@@ -445,6 +445,7 @@ class RecordingDataset():
                 # plt.pause(0.001)
                 # plt.show()
                 plt.savefig(os.path.join(path,"seq_%04d_%s" % (i, name)))
+                plt.pause(0.001)
                 plt.close()
 
     def save_batch(self, batch, base_path=""):
@@ -515,11 +516,16 @@ def dont_run_just_annotation():
 
 
 def test_data_laoding():
-    DS = RecordingDataset(recordings=[11], window_size=512, overlap=0.7, max_freq=8000, min_freq=100,
+    DS = RecordingDataset(recordings=[11], window_size=256, overlap=0.7, max_freq=8000, min_freq=15,
                           sequence_duration=0.3, dB_signal_upper_percentile=0.05)
     for b in DS.all_recordings_data(noise_threshold=0.25, noise_fraction=0.01, test_noise_detection=False):
-        DS.save_batch(b, base_path="../data/")
+        #:param noise_threshold, :param noise_fraction: See function get_noise_indices(). For finding radio noise.
+        #        Lower threshold detects less noise, higher fraction detects less noise.
+        #        Values: noise_threshold of 0.2 or 0.3 seemed to work well with noise_fraction=0.5.
+        #:param test_noise_detection: Set to True to adjust noise-detection parameters (noise_thresh and noise_frac):
+        #                             It will then plot sequences with noise detected in bird1's backpack recording, all up to seq. 200
         DS.plot_batch(b, base_path="../plots/")
+        DS.save_batch(b, base_path="../data/")
         mic, b1, b2, audio3c, rec = b
         print("hello")
 
