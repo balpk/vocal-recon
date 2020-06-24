@@ -269,7 +269,7 @@ class RecordingDataset():
             good_ids[200:] = False # Else there will be way too many plots
 
         assert np.sum(good_ids) < len(good_ids) * 0.5, "did not manage to filter out enough silence."
-        assert np.sum(good_ids) > 0, "Change your noise-filtering settings - everything was filtered out. Parameters are noise_threshold and noise_fraction "
+        assert np.sum(good_ids) > 0, "ERROR: Recording "+str(recording_nr)+": Change your noise-filtering settings - everything was filtered out. Parameters are noise_threshold and noise_fraction "
         # good_ids = average_power >=  self.dB_signal_threshold_fraction
 
         for spectro_dict in [self._cur_spectrogram_mic, self._cur_spectrogram_bird1, self._cur_spectrogram_bird2]:
@@ -429,24 +429,36 @@ class RecordingDataset():
         mic, bird1, bird2, audio3c, recording_nr = batch
         path = os.path.join(base_path, "rec%02d/" % (recording_nr))
         utils.ensure_dir(path)
-        for spectrogram, name in [(mic, "mic"),  (bird1, "bird1"),   (bird2, "bird2")]:
-            t = spectrogram["t"]
-            f = spectrogram["frequencies"]
-            Sxx = spectrogram["spectrogram"]
-            for i, seq in enumerate(Sxx):
+        # t_mic = mic["t"]
+        # f_mic = mic["frequencies"]
+        Sxx_mic = mic["spectrogram"]
+        for i, mic_seq in enumerate(Sxx_mic):
+            fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(4, 8))
+            for j, (spectrogram, name) in enumerate([(mic, "mic"),  (bird1, "bird1"),   (bird2, "bird2")]):
+                t = spectrogram["t"]
+                f = spectrogram["frequencies"]
+                Sxx = spectrogram["spectrogram"]
+                seq = Sxx[i]
                 t_ = t[i]
-                plt.figure()
-                plt.pcolormesh(t_, f, 10 * np.log10(1e-8 + seq.transpose()))  # dB spectrogram
+                # for i, seq in enumerate(Sxx):
+                axes[j].pcolormesh(t_, f, 10 * np.log10(1e-8 + seq.transpose()))
+                #plt.pcolormesh(t_, f, 10 * np.log10(1e-8 + seq.transpose()))  # dB spectrogram
                 # plt.pcolormesh(t, f,Sxx) # Linear spectrogram
-                plt.ylabel('Frequency [Hz]')
-                plt.xlabel('Time [sec]')
-                plt.title(name + ', seq. '+str(i) + ' - Spectrogram with scipy.signal', size=16)
+                # plt.ylabel('Frequency [Hz]')
+                # plt.xlabel('Time [sec]')
+                # plt.title(name + ', seq. '+str(i) + ' - Spectrogram with scipy.signal', size=16)
 
-                # plt.pause(0.001)
-                # plt.show()
-                plt.savefig(os.path.join(path,"seq_%04d_%s" % (i, name)))
-                plt.pause(0.001)
-                plt.close()
+                axes[j].set_title(name + ', seq. '+str(i) + ' - Spectrograms')
+            fig.subplots_adjust(hspace=.5)
+            plt.ylabel('Frequency [Hz]')
+            plt.xlabel('Time [sec]')
+            #fig.title(name + ', seq. '+str(i) + ' - Spectrograms', size=16)
+
+            # plt.pause(0.001)
+            # plt.show()
+            plt.savefig(os.path.join(path,"seq_%04d_%s" % (i, "all")))
+            plt.pause(0.001)
+            plt.close()
 
     def save_batch(self, batch, base_path=""):
         ''' takes what's returned by yield_batches() or all_recordings_data() in one step and stores
@@ -467,6 +479,7 @@ class RecordingDataset():
         assert len(np.unique(
             all_seq_lens)) == 1, "Error, we need same-length sequences, but there were different lengths or an empty array: " + str(
             np.unique(all_seq_lens))
+        print("\tWriting data for %d sequences..." % len(Sxx))
 
         for i, (seq, t_seq) in enumerate(zip(Sxx, t)):
             t0 = t_seq[0]
@@ -516,9 +529,13 @@ def dont_run_just_annotation():
 
 
 def test_data_laoding():
-    DS = RecordingDataset(recordings=[11], window_size=256, overlap=0.7, max_freq=8000, min_freq=15,
+    # excluded because only radio noise: 3, 5,  6, 8,10, 17,
+    # done: 9, 11,  12, 14, 15,  18, 19
+    # done: 20,
+    # up next: [28, 29, 30,31, 32, 33]  (day 8-16) ## Then:
+    DS = RecordingDataset(recordings=[28], window_size=256, overlap=0.7, max_freq=8000, min_freq=15,
                           sequence_duration=0.3, dB_signal_upper_percentile=0.05)
-    for b in DS.all_recordings_data(noise_threshold=0.25, noise_fraction=0.01, test_noise_detection=False):
+    for b in DS.all_recordings_data(noise_threshold=0.25, noise_fraction=0.01, test_noise_detection=True):
         #:param noise_threshold, :param noise_fraction: See function get_noise_indices(). For finding radio noise.
         #        Lower threshold detects less noise, higher fraction detects less noise.
         #        Values: noise_threshold of 0.2 or 0.3 seemed to work well with noise_fraction=0.5.
@@ -527,7 +544,7 @@ def test_data_laoding():
         DS.plot_batch(b, base_path="../plots/")
         DS.save_batch(b, base_path="../data/")
         mic, b1, b2, audio3c, rec = b
-        print("hello")
+        print("Generated plots and data for recording %d." % rec)
 
 
 
