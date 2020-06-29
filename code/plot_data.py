@@ -1,3 +1,14 @@
+# This plot can be used for either plotting the triplets for hand labelling,
+# or for generating the data from the manual labels, imported as csv files.
+
+# To run, change directory names, comment/uncomment lines exclusive for data
+# generation or plot generation.
+
+# As is, the script is in data generation mode. Avoid running the script on
+# recordings for which hand labels do not exist. The data may be overwritten.
+# In that case, just supply the recordings list instead of assigning the 
+# dictionary files.keys() . 
+
 import os
 import numpy as np
 from scipy import signal
@@ -53,12 +64,15 @@ window_size = 256
 overlap = 0.875
 noverlap = int(np.floor(window_size * overlap))
 # The Recordings to use
-recordings = [43,44,45,50]# files.keys() # Can also be a list
+recordings = [51,52,53]# files.keys() # Can also be a list
 
-
+# Data generation
 # when saving: adjust filename
-all_labels = pd.read_csv('manual_label_burak.csv')
+all_labels = pd.read_csv('manual_label_susanne.csv')
 # Filter data that has vocalisations, does not have radio noise
+#is_good = ((all_labels['Undecided'] == 0) & (all_labels['Wing_flap'] == 0) & \
+#          ((all_labels['acc_m vocal'] == 1) | (all_labels['acc_f vocal'] == 1)) & \
+#          (all_labels['acc_m radio'] == 0) & (all_labels['acc_f radio'] == 0))
 is_good = ((all_labels['acc_m vocal'] == 1) | (all_labels['acc_f vocal'] == 1)) & (all_labels['acc_m radio'] == 0) & (all_labels['acc_f radio'] == 0)
 good_labels = all_labels[is_good]
 
@@ -165,7 +179,7 @@ for no in recordings:
         acc_f_l[i]  = acc_f_bp[idxs[i]]
 
     '''
-    # Plots
+    # Plot generation 
     for i in range(mic_bp_l.shape[0]):
         fig, axs = plt.subplots(3, 1, sharex=True, figsize=(6, 10))
         fig.subplots_adjust(hspace=0.06)
@@ -196,6 +210,7 @@ for no in recordings:
 
     print(f'All plots saved for Recording {no}.')
     '''
+    # Data generation
     is_rec = good_labels['Recording'] == no
     rec_labels = good_labels[is_rec]
     # Spectograms and time series saving
