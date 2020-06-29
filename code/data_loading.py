@@ -144,7 +144,7 @@ class RecordingDataset():
         # self._cur_strength_raw = None
 
 
-    def _read_recording(self, recording_nr, remove_noise_bird_1=True, remove_noise_bird_2=True, noise_threshold=0.3,
+    def _read_recording(self, recording_nr, remove_noise_bird_1=True, remove_noise_bird_2=True, noise_threshold=None,
                         noise_fraction=0.02, test_noise_detection:bool=False):
         '''
         Reads a single recording and performs all the preprocessing
@@ -155,7 +155,7 @@ class RecordingDataset():
                                     For S_clean, set both remove_noise_bird_i to True.
         :param noise_threshold, :param noise_fraction: See function get_noise_indices(). For finding radio noise.
                 Lower threshold detects less noise, higher fraction detects less noise.
-                Values: noise_threshold of 0.2 or 0.3 seemed to work well with noise_fraction=0.5.
+                Values: noise_threshold: can be set to None. noise_threshold of 0.2 or 0.3 seemed to work well with noise_fraction=0.5.
         :param test_noise_detection: Set to True to adjust noise-detection parameters (noise_thresh and noise_frac):
                                      It will then plot sequences with noise detected in bird1's backpack recording, all up to seq. 200
         :return:
@@ -265,8 +265,8 @@ class RecordingDataset():
             good_ids = good_ids & np.bitwise_not(self.noise_ids_bird2)
 
         if test_noise_detection:
-            good_ids = self.noise_ids_bird1.copy()
-            good_ids[200:] = False # Else there will be way too many plots
+            good_ids = (average_power >= thresh) & (average_power_main >= average_power_high) & (self.noise_ids_bird1.copy())
+            #good_ids[200:] = False # Else there will be way too many plots
 
         assert np.sum(good_ids) < len(good_ids) * 0.5, "did not manage to filter out enough silence."
         assert np.sum(good_ids) > 0, "ERROR: Recording "+str(recording_nr)+": Change your noise-filtering settings - everything was filtered out. Parameters are noise_threshold and noise_fraction "
@@ -296,9 +296,9 @@ class RecordingDataset():
         # if self.do_shuffle:
         #     np.random.shuffle(self._shuffled_recording_indices)
 
-    def get_noise_indices(self, recording_bird1, recording_bird2, noise_threshold=0.2, noise_fraction=0.5):
+    def get_noise_indices(self, recording_bird1, recording_bird2, noise_threshold=None, noise_fraction=0.5):
         ''' Had to separate this from the main setup, because my RAM can't handle another two huge arrays.
-            :param noise_threshold: what upper percentile of values to consider as something other than silence.
+            :param noise_threshold: None -> use fixed threshold. what upper percentile of values to consider as something other than silence.
             :param noise_fraction: Used to detect noise: Intensity in higher frequency range must be at least
                                     [this fraction] x (intensity in bird vocals frequency range) to be considered noise.
             :returns two boolean lists across the spectrogram-time dimension, where true means "probably noise".
@@ -326,27 +326,34 @@ class RecordingDataset():
             spectro_dict["t"] = spectro_dict["t"].reshape(( num_sequences, self.sequence_length))
 
         radio_freq_ids_bird1 = ((radio_spectrogram_bird1["frequencies"] <= 12000) & (
-                                 radio_spectrogram_bird1["frequencies"] >= 8000))
+                radio_spectrogram_bird1["frequencies"] >= 4000))
         radio_freq_ids_bird2 = ((radio_spectrogram_bird2["frequencies"] <= 12000) & (
-                                 radio_spectrogram_bird2["frequencies"] >= 8000))
+                radio_spectrogram_bird2["frequencies"] >= 4000))
         mid_freq_ids = ((radio_spectrogram_bird1["frequencies"]  <= 6000) & (
-                         radio_spectrogram_bird1["frequencies"]  >= 2000))
-        main_freq_ids = ((radio_spectrogram_bird1["frequencies"]  <= 4000) & (
-                          radio_spectrogram_bird1["frequencies"]  >= 2000))
+                radio_spectrogram_bird1["frequencies"]  >= 2000))
+        accel_freq_ids = ((radio_spectrogram_bird1["frequencies"]  <= 2000) & (
+                radio_spectrogram_bird1["frequencies"]  >= 500))
         average_power_radio_bird1 = np.mean(np.abs(radio_spectrogram_bird1["spectrogram"][:, :, radio_freq_ids_bird1]),
                                             axis=(1, 2))
-        average_power_bird1 = np.mean(np.abs(radio_spectrogram_bird1["spectrogram"][:, :, mid_freq_ids]), axis=(1, 2))
+        average_power_bird1 = np.mean(np.abs(radio_spectrogram_bird1["spectrogram"][:, :, accel_freq_ids]), axis=(1, 2))
         average_power_radio_bird2 = np.mean(np.abs(radio_spectrogram_bird2["spectrogram"][:, :, radio_freq_ids_bird2]),
                                             axis=(1, 2))
-        average_power_bird2 = np.mean(np.abs(radio_spectrogram_bird2["spectrogram"][:, :, mid_freq_ids]), axis=(1, 2))
+        average_power_bird2 = np.mean(np.abs(radio_spectrogram_bird2["spectrogram"][:, :, accel_freq_ids]), axis=(1, 2))
 
         # * Find parts with radio noise, for any of the two birds
-        thresh_radio_bird1 = self.find_good_absolute_threshold(average_power_bird1, noise_threshold)
+        #thresh_radio_bird1 = 7.313734704914626e-09
+        #thresh_radio_bird2 = 1.1803470989655425e-07
+        if noise_threshold is None:
+            thresh_radio_bird2 = 1e-06
+            thresh_radio_bird1 = 1e-06
+        else:
+            thresh_radio_bird1 = self.find_good_absolute_threshold(average_power_radio_bird1, noise_threshold)
+            thresh_radio_bird2 = self.find_good_absolute_threshold(average_power_radio_bird2, noise_threshold)
         noise_ids_bird1 = (average_power_radio_bird1 >= noise_fraction * average_power_bird1) & \
-                            (average_power_radio_bird1 >= thresh_radio_bird1)
-        thresh_radio_bird2 = self.find_good_absolute_threshold(average_power_bird2, noise_threshold)
+                          (average_power_radio_bird1 >= thresh_radio_bird1)
         noise_ids_bird2 = (average_power_radio_bird2 >= noise_fraction * average_power_bird2 ) & \
-                            (average_power_radio_bird2 >= thresh_radio_bird2)
+                          (average_power_radio_bird2 >= thresh_radio_bird2)
+
 
         del radio_spectrogram_bird1, radio_spectrogram_bird2
         del average_power_bird1, average_power_bird2
@@ -415,7 +422,7 @@ class RecordingDataset():
                 raise NotImplementedError("Batch-processing not implemented yet (todo; not too difficult though, just "
                                           "shuffle the indices of the whole recording, and create batch_size-sized batches from them)")
 
-    def all_recordings_data(self, noise_threshold=0.3, noise_fraction=0.02, test_noise_detection=False):
+    def all_recordings_data(self, noise_threshold=None, noise_fraction=0.02, test_noise_detection=False):
         ''' '''
         for rec in self._recordings:
             self._read_recording(rec, noise_threshold=noise_threshold, noise_fraction=noise_fraction, test_noise_detection=test_noise_detection)
@@ -457,8 +464,8 @@ class RecordingDataset():
             # plt.pause(0.001)
             # plt.show()
             plt.savefig(os.path.join(path,"seq_%04d_%s" % (i, "all")))
-            plt.pause(0.001)
             plt.close()
+            #plt.pause(0.001)
 
     def save_batch(self, batch, base_path=""):
         ''' takes what's returned by yield_batches() or all_recordings_data() in one step and stores
@@ -533,12 +540,12 @@ def test_data_laoding():
     # done: 9, 11,  12, 14, 15,  18, 19
     # done: 20,
     # up next: [28, 29, 30,31, 32, 33]  (day 8-16) ## Then:
-    DS = RecordingDataset(recordings=[28], window_size=256, overlap=0.7, max_freq=8000, min_freq=15,
+    DS = RecordingDataset(recordings=[ 9,   14, 15,  18, 19], window_size=256, overlap=0.7, max_freq=8000, min_freq=15,
                           sequence_duration=0.3, dB_signal_upper_percentile=0.05)
-    for b in DS.all_recordings_data(noise_threshold=0.25, noise_fraction=0.01, test_noise_detection=True):
+    for b in DS.all_recordings_data(noise_threshold=None, noise_fraction=0.0, test_noise_detection=False):
         #:param noise_threshold, :param noise_fraction: See function get_noise_indices(). For finding radio noise.
         #        Lower threshold detects less noise, higher fraction detects less noise.
-        #        Values: noise_threshold of 0.2 or 0.3 seemed to work well with noise_fraction=0.5.
+        #        Values: noise_threshold: can be set to none. Else noise_threshold of 0.2 or 0.3 seemed to work well with noise_fraction=0.5.
         #:param test_noise_detection: Set to True to adjust noise-detection parameters (noise_thresh and noise_frac):
         #                             It will then plot sequences with noise detected in bird1's backpack recording, all up to seq. 200
         DS.plot_batch(b, base_path="../plots/")
